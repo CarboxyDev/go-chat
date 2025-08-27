@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/fatih/color"
 )
@@ -19,13 +22,18 @@ func main() {
 	defer server.Close();
 	color.Green("[+] Server has been started on port %s", PORT );
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go waitForSignals(server, sigChan);
+
 	for {
 		conn, err := server.Accept();
 
 		if err != nil {
 			color.Red("[x] Unable to accept connection. ")
 			color.Red("[x] Error: " + err.Error())
-			continue;
+			break;
 		}
 
 		go connectionHandler(conn);
@@ -37,13 +45,13 @@ func main() {
 func connectionHandler(conn net.Conn) {
 	defer conn.Close();
 
-	buffer := make([]byte, 1024 * 100); // 100 KB buffer for incoming messages
+	buffer := make([]byte, 1024 * 5); // 5 KB buffer for incoming messages
 
 	for {
 		n, err := conn.Read(buffer);
 		if err != nil {
 			color.Blue("[-] Client disconnected");
-			return;
+			continue;
 		}
 
 		data := buffer[:n]
@@ -53,4 +61,10 @@ func connectionHandler(conn net.Conn) {
 
 	}
 
+}
+
+func waitForSignals( server net.Listener, sigChan chan os.Signal) {
+	<- sigChan;
+	color.Red("[!] Closing the server");
+	server.Close();
 }
