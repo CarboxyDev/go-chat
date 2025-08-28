@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/CarboxyDev/go-chat/internal/constants"
 	"github.com/fatih/color"
 )
 
@@ -141,26 +146,46 @@ func connectionHandler(hub *Hub, conn net.Conn) {
 
 
 func writePump(c *Client) {
+	bufWriter := bufio.NewWriter(c.conn)
     for msg := range c.send {
-        if _, err := c.conn.Write(msg); err != nil {
-            return
-        }
+        if err := writeFrame(bufWriter, msg); err != nil { break }
+        if err := bufWriter.Flush(); err != nil { break }
     }
+	c.conn.Close()
+
 }
 
 func readPump(hub *Hub, c *Client) {
-    buf := make([]byte, 4096)
+    bufReader := bufio.NewReader(c.conn)
+
     for {
-        n, err := c.conn.Read(buf)
-        if err != nil { // EOF or network error
+        frame, err := readFrame(bufReader, constants.MaxFrameSize)
+        if err != nil { 
             hub.unregister <- c
             return
         }
-        if n > 0 {
-            // copy because buf will be reused
-            payload := make([]byte, n)
-            copy(payload, buf[:n])
-            hub.broadcast <- Broadcast{from: c, data: payload}
-        }
+
+		// Frame = JSON payload from the client 
+		hub.broadcast <- Broadcast{from: c, data: frame}
     }
+}
+
+// writeFrame writes len(payload) as 4-byte big-endian then payload.
+func writeFrame(w io.Writer, payload []byte) error {
+    var hdr [4]byte
+    binary.BigEndian.PutUint32(hdr[:], uint32(len(payload)))
+    if _, err := w.Write(hdr[:]); err != nil { return err }
+    _, err := w.Write(payload)
+    return err
+}
+
+// readFrame reads a single length-prefixed frame with a max cap.
+func readFrame(r io.Reader, max int) ([]byte, error) {
+    var hdr [4]byte
+    if _, err := io.ReadFull(r, hdr[:]); err != nil { return nil, err }
+    n := int(binary.BigEndian.Uint32(hdr[:]))
+    if n < 0 || n > max { return nil, fmt.Errorf("frame too large: %d", n) }
+    buf := make([]byte, n)
+    if _, err := io.ReadFull(r, buf); err != nil { return nil, err }
+    return buf, nil
 }
